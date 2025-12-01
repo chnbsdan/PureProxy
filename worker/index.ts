@@ -1,21 +1,21 @@
+
 import { connect } from 'cloudflare:sockets';
 
-// 数据源配置
+// 数据源配置 (使用 jsDelivr CDN 加速，确保稳定性)
 const PROXY_SOURCES = [
   {
-    name: '391040525/ProxyIP (Active - 推荐)',
-    // 针对此源回退到原始 GitHub 地址配合 UA 伪装，解决 jsDelivr 可能的同步延迟导致的 404
-    url: 'https://raw.githubusercontent.com/391040525/ProxyIP/main/active.txt' 
+    name: 'Monosans/All (海量源)',
+    // 包含 HTTP/SOCKS4/SOCKS5 所有类型的代理，量极大
+    url: 'https://cdn.jsdelivr.net/gh/monosans/proxy-list@main/proxies/all.txt' 
   },
   {
-    name: 'ymyuuu/IPDB (Best Proxy)',
-    // 聚合源通常比较大，使用 jsDelivr 加速
-    url: 'https://cdn.jsdelivr.net/gh/ymyuuu/IPDB@main/bestproxy.txt'
-  },
-  {
-    name: 'vfarid/cf-ip-scanner',
-    // 这是一个纯 IP 列表（无端口），需要代码逻辑支持自动补全端口
+    name: 'vfarid/CF-Scanner (纯IP)',
+    // 专门针对 Cloudflare 的扫描列表
     url: 'https://cdn.jsdelivr.net/gh/vfarid/cf-ip-scanner@master/ipv4.txt'
+  },
+  {
+    name: 'TheSpeedX/SOCKS (备用)',
+    url: 'https://cdn.jsdelivr.net/gh/TheSpeedX/SOCKS-List@master/http.txt'
   }
 ];
 
@@ -31,21 +31,23 @@ const withTimeout = (promise, ms) => {
 };
 
 /**
- * 暴力提取 IP
- * 支持 IP:Port 格式，也支持纯 IP 格式
+ * 终极暴力提取 IP
+ * 移除所有边界检查，只要像 IP 就抓出来
  */
 function extractIPs(text) {
   if (!text) return [];
   const candidates = new Set();
   
-  // 正则升级: (?::\d+)? 表示端口部分是可选的
-  // 匹配: 192.168.1.1 或 192.168.1.1:8080
-  const regex = /\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b/g;
+  // 最宽松的 IPv4 正则：数字.数字.数字.数字 (可选端口)
+  // 不使用 \b 边界，防止被特殊符号干扰
+  const regex = /(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?/g;
   
-  // 1. 尝试 Base64 解码 (针对 IPDB 等订阅链接)
+  // 1. 尝试 Base64 解码 (针对某些订阅源)
   try {
+    // 移除空白字符
     const cleanText = text.replace(/\s/g, '');
-    if (cleanText.length > 20) {
+    // 简单的 Base64 特征判断 (长度是4倍数，且只包含 base64 字符)
+    if (cleanText.length > 20 && /^[a-zA-Z0-9+/]+={0,2}$/.test(cleanText)) {
       const decoded = atob(cleanText);
       const decodedMatches = decoded.match(regex);
       if (decodedMatches) {
@@ -53,10 +55,10 @@ function extractIPs(text) {
       }
     }
   } catch (e) {
-    // 解码失败忽略，继续尝试原文匹配
+    // 解码失败忽略
   }
 
-  // 2. 原文暴力匹配 (应对纯文本列表)
+  // 2. 原文匹配 (这是主力)
   const matches = text.match(regex);
   if (matches) {
     matches.forEach(ip => candidates.add(ip));
@@ -66,24 +68,25 @@ function extractIPs(text) {
 }
 
 /**
- * 判断是否为公网 IP (过滤内网和保留 IP)
+ * 判断是否为合法公网 IPv4
  */
 function isValidPublicIp(ip) {
   if (!ip) return false;
-  const ipv4Regex = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
-  const match = ip.match(ipv4Regex);
-  if (!match) return false;
+  // 简单的格式校验
+  const parts = ip.split('.').map(Number);
+  if (parts.length !== 4) return false;
+  if (parts.some(p => isNaN(p) || p < 0 || p > 255)) return false;
 
-  const part0 = parseInt(match[1], 10);
-  const part1 = parseInt(match[2], 10);
+  const [a, b] = parts;
 
-  if (part0 === 10) return false;
-  if (part0 === 172 && part1 >= 16 && part1 <= 31) return false;
-  if (part0 === 192 && part1 === 168) return false;
-  if (part0 === 127) return false;
-  if (part0 === 0) return false;
-  if (part0 >= 224) return false;
-  if (part0 === 215) return false; // DoD
+  // 排除内网和保留地址
+  if (a === 10) return false;
+  if (a === 172 && b >= 16 && b <= 31) return false;
+  if (a === 192 && b === 168) return false;
+  if (a === 127) return false;
+  if (a === 0) return false;
+  if (a >= 224) return false; // Multicast+
+  if (a === 215) return false; // DoD (常见误报)
   
   return true;
 }
@@ -121,7 +124,6 @@ function isResidentialISP(ispName) {
  */
 async function fetchIpGeo(ip) {
   try {
-    // 增加 User-Agent 防止 API 拦截
     const response = await fetch(`http://ip-api.com/json/${ip}?fields=status,message,country,countryCode,regionName,city,isp,org,as&lang=zh-CN`, {
         headers: { 'User-Agent': 'Mozilla/5.0' }
     });
@@ -148,10 +150,10 @@ async function validateProxyIP(ip, port = 443) {
       socket = connect({ hostname: ip, port: port });
       writer = socket.writable.getWriter();
       return writer.ready;
-    }(), 1500); // 连接超时
+    }(), 2000); // 连接超时 2s
 
-    // 发送 Cloudflare 探测包
-    // Host: speed.cloudflare.com 是验证 ProxyIP 的标准靶标
+    // 发送 HTTP 请求探测
+    // 必须包含 Host: speed.cloudflare.com 才能触发反代逻辑
     const request = new TextEncoder().encode(
       `GET / HTTP/1.1\r\nHost: speed.cloudflare.com\r\nConnection: close\r\nUser-Agent: PureProxy/ScanBot\r\n\r\n`
     );
@@ -161,16 +163,15 @@ async function validateProxyIP(ip, port = 443) {
     let responseText = '';
     const decoder = new TextDecoder();
     
-    // 读取响应
+    // 读取响应，最多读 3s
     await withTimeout(async function() {
       const { value, done } = await reader.read();
       if (value) {
         responseText = decoder.decode(value, { stream: false });
       }
-    }(), 2500); 
+    }(), 3000); 
 
-    // 检查是否包含 Cloudflare 特征头 (Server: cloudflare)
-    // 这是判断 IP 是否能反代 Cloudflare 的黄金标准
+    // 关键判据: Server: cloudflare
     const isCloudflare = responseText.toLowerCase().includes('server: cloudflare');
     
     if (isCloudflare) {
@@ -192,33 +193,31 @@ async function handleScheduled(event, env, ctx) {
   console.log("开始扫描 Cloudflare ProxyIP...");
   let candidates = [];
   
-  // 1. 从公共源获取
+  // 1. 获取所有源数据
   const fetchPromises = PROXY_SOURCES.map(async (source) => {
     try {
-      // 强制添加时间戳参数，防止缓存 (如果是 GitHub Raw 需要这个来获取最新)
-      const urlWithCacheBust = source.url.includes('?') ? `${source.url}&t=${Date.now()}` : `${source.url}?t=${Date.now()}`;
+      // 强制刷新缓存
+      const urlWithCacheBust = `${source.url}?t=${Date.now()}`;
       console.log(`[Source] 正在获取: ${source.name}`);
       
       const response = await fetch(urlWithCacheBust, {
           headers: {
-              // 模拟真实浏览器 User-Agent，这是访问 GitHub Raw 的关键
               'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
           }
       });
 
       if (response.ok) {
         const text = await response.text();
-        console.log(`[Source] ${source.name} 状态码: ${response.status}, 内容长度: ${text.length}`);
+        // 关键调试信息: 打印前 50 个字符，看看下载了什么
+        const preview = text.substring(0, 50).replace(/\n/g, '\\n');
+        console.log(`[Source] ${source.name} (Status: ${response.status}, Size: ${text.length})`);
+        console.log(`[Preview] ${preview}...`);
         
-        if (text.length < 50) {
-             console.warn(`[Source] 内容过短，可能获取失败: ${text.substring(0, 100)}`);
-        }
-
         const ips = extractIPs(text); 
         console.log(`   └─ 暴力解析出 ${ips.length} 个 IP`);
         return ips;
       } else {
-        console.warn(`[Source] ${source.name} 失败，状态码: ${response.status}`);
+        console.warn(`[Source] ${source.name} 失败: ${response.status}`);
       }
     } catch (e) {
       console.error(`[Source] 错误 ${source.name}:`, e);
@@ -233,26 +232,28 @@ async function handleScheduled(event, env, ctx) {
   candidates = [...new Set(candidates)];
   
   if (candidates.length === 0) {
-    console.log("❌ 未获取到任何 IP，请检查网络或源状态");
+    console.error("❌ 严重错误: 所有源均未解析出 IP。请检查日志中的 Preview 信息。");
     return;
   }
   
-  // 随机抽取 40 个进行验证 (避免超时)
-  const batch = candidates.sort(() => Math.random() - 0.5).slice(0, 40);
-  console.log(`本次扫描队列: ${batch.length} 个 IP (从 ${candidates.length} 个中随机抽取)`);
+  // 随机抽取 50 个进行验证
+  // Monosans 源有几万个 IP，必须随机抽样，否则永远只验证前几个
+  const batch = candidates.sort(() => Math.random() - 0.5).slice(0, 50);
+  console.log(`本次扫描队列: ${batch.length} 个 IP (从 ${candidates.length} 个候选库中抽取)`);
 
   let validCount = 0;
 
   for (const line of batch) {
-    if (validCount >= 6) break; // 每次最多入库 6 个，细水长流
+    if (validCount >= 5) break; // 每次存 5 个，防止超时
 
-    // 兼容带端口和不带端口的情况
     const parts = line.split(':');
     let ip = parts[0];
     let port = 443; // 默认端口
 
     if (parts.length === 2) {
-        port = parseInt(parts[1], 10);
+        // 过滤非数字端口
+        const p = parseInt(parts[1], 10);
+        if (!isNaN(p)) port = p;
     }
 
     if (!isValidPublicIp(ip)) continue;
@@ -263,7 +264,8 @@ async function handleScheduled(event, env, ctx) {
     if (latency !== null) {
       console.log(`✅ [Valid] ${ip}:${port} (${latency}ms)`);
       
-      await delay(1000); // 避免 Geo API 速率限制
+      // 验证通过后，查地理位置
+      await delay(800); 
       const geo = await fetchIpGeo(ip);
       
       const country = geo ? geo.country : '未知';
@@ -273,10 +275,10 @@ async function handleScheduled(event, env, ctx) {
       const isp = geo ? geo.isp : 'Unknown ISP';
       const isResidential = isResidentialISP(isp);
 
-      // 智能打分策略
+      // 动态打分
       let purityScore = 60;
-      if (latency < 300) purityScore += 15;
-      if (isResidential) purityScore += 20; // 家宽加分
+      if (latency < 300) purityScore += 10;
+      if (isResidential) purityScore += 25; // 家宽大幅加分
       if (countryCode === 'US') purityScore += 15; // 美国加分
       
       purityScore = Math.min(100, Math.max(10, purityScore));
@@ -311,7 +313,7 @@ async function handleScheduled(event, env, ctx) {
     }
   }
   
-  console.log(`任务结束，成功入库 ${validCount} 个优质 ProxyIP`);
+  console.log(`任务结束，入库 ${validCount} 个`);
 }
 
 async function handleRequest(request, env) {
@@ -328,9 +330,8 @@ async function handleRequest(request, env) {
 
   if (url.pathname === '/api/proxies') {
     try {
-      // 优先展示高分、家宽 IP
       const { results } = await env.DB.prepare(
-        "SELECT * FROM proxies ORDER BY purity_score DESC, is_residential DESC LIMIT 100"
+        "SELECT * FROM proxies ORDER BY purity_score DESC LIMIT 100"
       ).all();
       
       const formatted = results.map((row) => ({
