@@ -6,18 +6,31 @@ import {
   Globe, 
   Shield, 
   Wifi, 
-  Info 
+  Info,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown
 } from 'lucide-react';
 import { fetchProxies } from './services/proxyService';
 import { ProxyIP, FilterState, ProxyProtocol, AnonymityLevel } from './types';
 import PurityBadge from './components/PurityBadge';
 import DetailModal from './components/DetailModal';
 
+// 排序配置类型
+type SortKey = 'country' | 'latency' | 'purityScore';
+interface SortConfig {
+  key: SortKey;
+  direction: 'asc' | 'desc';
+}
+
 function App() {
   const [proxies, setProxies] = useState<ProxyIP[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedProxy, setSelectedProxy] = useState<ProxyIP | null>(null);
   
+  // Sorting State
+  const [sortConfig, setSortConfig] = useState<SortConfig>({ key: 'purityScore', direction: 'desc' });
+
   // Filters
   const [searchTerm, setSearchTerm] = useState('');
   const [filters, setFilters] = useState<FilterState>({
@@ -42,8 +55,26 @@ function App() {
     loadData();
   }, []);
 
-  const filteredProxies = useMemo(() => {
-    return proxies.filter(p => {
+  // Handle Sort Request
+  const requestSort = (key: SortKey) => {
+    let direction: 'asc' | 'desc' = 'asc';
+    if (sortConfig.key === key && sortConfig.direction === 'asc') {
+      direction = 'desc';
+    }
+    setSortConfig({ key, direction });
+  };
+
+  // Get Sort Icon
+  const getSortIcon = (key: SortKey) => {
+    if (sortConfig.key !== key) return <ArrowUpDown size={14} className="ml-1 opacity-40" />;
+    return sortConfig.direction === 'asc' 
+      ? <ArrowUp size={14} className="ml-1 text-emerald-400" /> 
+      : <ArrowDown size={14} className="ml-1 text-emerald-400" />;
+  };
+
+  const filteredAndSortedProxies = useMemo(() => {
+    // 1. Filter
+    let result = proxies.filter(p => {
       const matchesSearch = 
         p.ip.includes(searchTerm) || 
         p.country.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -54,7 +85,27 @@ function App() {
       
       return matchesSearch && matchesProtocol && matchesPurity;
     });
-  }, [proxies, searchTerm, filters]);
+
+    // 2. Sort
+    result.sort((a, b) => {
+      let aValue = a[sortConfig.key];
+      let bValue = b[sortConfig.key];
+
+      // Handle undefined
+      if (aValue === undefined) return 1;
+      if (bValue === undefined) return -1;
+
+      if (aValue < bValue) {
+        return sortConfig.direction === 'asc' ? -1 : 1;
+      }
+      if (aValue > bValue) {
+        return sortConfig.direction === 'asc' ? 1 : -1;
+      }
+      return 0;
+    });
+
+    return result;
+  }, [proxies, searchTerm, filters, sortConfig]);
 
   return (
     <div className="min-h-screen bg-[#0f172a] text-gray-200 font-sans selection:bg-emerald-500/30">
@@ -154,11 +205,35 @@ function App() {
               <thead className="text-xs text-gray-500 uppercase bg-gray-900/50 border-b border-gray-700">
                 <tr>
                   <th scope="col" className="px-6 py-4 font-medium">IP 地址</th>
-                  <th scope="col" className="px-6 py-4 font-medium">地理位置</th>
+                  <th 
+                    scope="col" 
+                    className="px-6 py-4 font-medium cursor-pointer hover:text-white hover:bg-gray-800 transition-colors"
+                    onClick={() => requestSort('country')}
+                  >
+                    <div className="flex items-center">
+                      地理位置 {getSortIcon('country')}
+                    </div>
+                  </th>
                   <th scope="col" className="px-6 py-4 font-medium">协议</th>
                   <th scope="col" className="px-6 py-4 font-medium hidden sm:table-cell">匿名度</th>
-                  <th scope="col" className="px-6 py-4 font-medium text-right">延迟</th>
-                  <th scope="col" className="px-6 py-4 font-medium text-center">纯净度</th>
+                  <th 
+                    scope="col" 
+                    className="px-6 py-4 font-medium text-right cursor-pointer hover:text-white hover:bg-gray-800 transition-colors"
+                    onClick={() => requestSort('latency')}
+                  >
+                    <div className="flex items-center justify-end">
+                      延迟 {getSortIcon('latency')}
+                    </div>
+                  </th>
+                  <th 
+                    scope="col" 
+                    className="px-6 py-4 font-medium text-center cursor-pointer hover:text-white hover:bg-gray-800 transition-colors"
+                    onClick={() => requestSort('purityScore')}
+                  >
+                    <div className="flex items-center justify-center">
+                      纯净度 {getSortIcon('purityScore')}
+                    </div>
+                  </th>
                   <th scope="col" className="px-6 py-4 font-medium text-center">操作</th>
                 </tr>
               </thead>
@@ -176,7 +251,7 @@ function App() {
                       <td className="px-6 py-4"><div className="h-8 bg-gray-700 rounded w-8 mx-auto"></div></td>
                     </tr>
                   ))
-                ) : filteredProxies.length === 0 ? (
+                ) : filteredAndSortedProxies.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="px-6 py-12 text-center text-gray-500">
                       <Filter className="w-12 h-12 mx-auto mb-3 opacity-20" />
@@ -184,7 +259,7 @@ function App() {
                     </td>
                   </tr>
                 ) : (
-                  filteredProxies.map((proxy) => (
+                  filteredAndSortedProxies.map((proxy) => (
                     <tr 
                       key={proxy.id} 
                       className="border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors group cursor-pointer"
@@ -197,7 +272,6 @@ function App() {
                       <td className="px-6 py-4">
                         <div className="flex items-center gap-2">
                           <span className="text-lg" role="img" aria-label={proxy.country}>
-                            {/* Simple mapping for flags would go here, using Globe as fallback */}
                             <Globe size={16} className="text-blue-400" />
                           </span>
                           <span>{proxy.countryCode}</span>
@@ -237,7 +311,7 @@ function App() {
           {/* Footer of table */}
           <div className="bg-gray-900/50 px-6 py-3 border-t border-gray-700 flex justify-between items-center">
             <span className="text-xs text-gray-500">
-              显示 {filteredProxies.length} 个结果
+              显示 {filteredAndSortedProxies.length} 个结果
             </span>
             <div className="text-xs text-gray-600 font-mono">
               Powered by Cloudflare Workers & Gemini

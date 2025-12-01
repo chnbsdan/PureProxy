@@ -1,9 +1,24 @@
 import { connect } from 'cloudflare:sockets';
 
-// 代理源列表
+// 高质量代理源配置 (Monosans & Zloi-User)
+// 这些列表通常只包含存活的代理，且更新频率高
 const PROXY_SOURCES = [
-  'https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/http.txt',
-  'https://raw.githubusercontent.com/TheSpeedX/SOCKS-List/master/socks5.txt',
+  {
+    url: 'https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt',
+    protocol: 'HTTP'
+  },
+  {
+    url: 'https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt',
+    protocol: 'SOCKS5'
+  },
+  {
+    url: 'https://raw.githubusercontent.com/zloi-user/hideip.me/main/http.txt',
+    protocol: 'HTTP'
+  },
+  {
+    url: 'https://raw.githubusercontent.com/zloi-user/hideip.me/main/socks5.txt',
+    protocol: 'SOCKS5'
+  }
 ];
 
 // 辅助函数: 延迟
@@ -72,31 +87,41 @@ async function checkProxyConnection(ip, port) {
  * 处理 Cron 定时任务
  */
 async function handleScheduled(event, env, ctx) {
-  console.log("开始执行定时抓取任务...");
+  console.log("开始执行定时抓取任务 (高质量源)...");
   let validCount = 0;
   
-  for (const source of PROXY_SOURCES) {
+  // 随机打乱源顺序，避免每次都只跑第一个
+  const shuffledSources = PROXY_SOURCES.sort(() => Math.random() - 0.5);
+
+  for (const source of shuffledSources) {
+    // 简单的断路器：如果本次执行已经存够了 10 个新 IP，就提前结束，避免超时
+    if (validCount >= 10) break;
+
     try {
-      console.log(`正在获取列表: ${source}`);
-      const response = await fetch(source);
+      console.log(`正在获取列表: ${source.url}`);
+      const response = await fetch(source.url);
       if (!response.ok) continue;
       
       const text = await response.text();
       const lines = text.split('\n');
       
-      // 每次执行随机抽取 20 个 IP 进行验证
-      // 为什么只验证 20 个？因为 fetchIpGeo 有速率限制，且 Worker CPU 有限
+      // 从列表中随机抽取 15 个 IP 进行深度验证
+      // 这里的列表是纯净 IP:Port 格式
       const sampleLines = lines
-        .filter(l => l.includes(':'))
+        .map(l => l.trim())
+        .filter(l => l && l.includes(':'))
         .sort(() => Math.random() - 0.5)
-        .slice(0, 20);
+        .slice(0, 15);
 
-      const protocol = source.includes('socks5') ? 'SOCKS5' : 'HTTP';
-      console.log(`抽取了 ${sampleLines.length} 个 IP 进行验证 (${protocol})`);
+      console.log(`源 [${source.protocol}] 抽取了 ${sampleLines.length} 个样本进行验证`);
 
       for (const line of sampleLines) {
-        const [ip, portStr] = line.trim().split(':');
-        const port = parseInt(portStr);
+        const parts = line.split(':');
+        if (parts.length < 2) continue;
+        
+        const ip = parts[0];
+        const port = parseInt(parts[1]);
+        
         if (!ip || isNaN(port)) continue;
 
         // 1. TCP 验证 (严格超时)
@@ -106,8 +131,8 @@ async function handleScheduled(event, env, ctx) {
           console.log(`IP ${ip}:${port} 连接成功 (${latency}ms)，正在查询 Geo 信息...`);
           
           // 2. 获取真实 Geo 信息
-          // 增加 1.5秒 延迟，防止触发 ip-api 45次/分 的限制
-          await delay(1500); 
+          // 增加 2秒 延迟，防止触发 ip-api 45次/分 的限制
+          await delay(2000); 
           const geo = await fetchIpGeo(ip);
           
           const country = geo ? geo.country : '未知';
@@ -116,9 +141,15 @@ async function handleScheduled(event, env, ctx) {
           const region = geo ? geo.regionName : '';
           const isp = geo ? geo.isp : 'Unknown ISP';
 
-          // 3. 计算分数
-          const purityScore = Math.max(10, 100 - Math.floor(latency / 10)); // 简单算法：延迟越低分越高
-          const cfProb = purityScore > 80 ? 90 : 40; // 模拟值
+          // 3. 计算分数 (基于延迟和 ISP)
+          // 延迟越低分越高，如果是常见云厂商(Google/Amazon)稍微扣分
+          let baseScore = Math.max(10, 100 - Math.floor(latency / 10));
+          if (isp.includes('Google') || isp.includes('Amazon') || isp.includes('Microsoft')) {
+            baseScore -= 15;
+          }
+          
+          const purityScore = Math.max(0, Math.min(100, baseScore));
+          const cfProb = purityScore > 75 ? 85 : 30; // 估算值
           const id = crypto.randomUUID();
 
           // 4. 存入数据库
@@ -137,13 +168,14 @@ async function handleScheduled(event, env, ctx) {
                 purity_score = excluded.purity_score,
                 cf_pass_prob = excluded.cf_pass_prob
             `).bind(
-              id, ip, port, protocol,
+              id, ip, port, source.protocol,
               country, countryCode, region, city, isp,
               '高匿', latency, purityScore, cfProb,
               Date.now(), Date.now()
             ).run();
             
             validCount++;
+            console.log(`--> 入库成功: ${ip}`);
           } catch (dbErr) {
             console.error("数据库写入失败", dbErr);
           }
@@ -174,9 +206,9 @@ async function handleRequest(request, env) {
 
   if (url.pathname === '/api/proxies') {
     try {
-      // 获取最新的 50 条数据
+      // 获取最新的 100 条数据
       const { results } = await env.DB.prepare(
-        "SELECT * FROM proxies ORDER BY last_checked DESC LIMIT 50"
+        "SELECT * FROM proxies ORDER BY last_checked DESC LIMIT 100"
       ).all();
       
       const formatted = results.map((row) => ({
@@ -186,8 +218,8 @@ async function handleRequest(request, env) {
         protocol: row.protocol,
         country: row.country,
         countryCode: row.country_code,
-        region: row.region, // New
-        city: row.city,     // New
+        region: row.region,
+        city: row.city,
         isp: row.isp,
         anonymity: row.anonymity,
         latency: row.latency,
