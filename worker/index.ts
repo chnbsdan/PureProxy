@@ -37,6 +37,7 @@ function extractIPs(text) {
   
   // 1. 尝试 Base64 解码 (防止完全乱码)
   try {
+    // 简单的启发式检查：如果不含空格且长度较长，可能是 Base64
     if (!text.includes(' ') && text.length > 20) {
       const decoded = atob(text.trim());
       // 如果解码后包含数字和点，说明解码正确，使用解码后的内容
@@ -49,6 +50,7 @@ function extractIPs(text) {
   }
 
   // 2. 正则暴力匹配 (匹配 1.1.1.1:80 格式)
+  // \b 确保边界，避免匹配到类似版本号的字符串
   const regex = /\b(?:\d{1,3}\.){3}\d{1,3}:\d+\b/g;
   const matches = text.match(regex);
   
@@ -73,7 +75,7 @@ function isValidPublicIp(ip) {
   if (part0 === 127) return false;
   if (part0 === 0) return false;
   if (part0 >= 224) return false;
-  if (part0 === 215) return false; // DoD
+  if (part0 === 215) return false; // DoD (美国国防部保留IP，通常不是公共代理)
   
   return true;
 }
@@ -138,6 +140,7 @@ async function validateProxyIP(ip, port = 443) {
     }(), 1500); // 连接超时
 
     // 发送 Cloudflare 探测包
+    // Host: speed.cloudflare.com 是关键，如果对方是 Cloudflare 反代，会正确转发
     const request = new TextEncoder().encode(
       `GET / HTTP/1.1\r\nHost: speed.cloudflare.com\r\nConnection: close\r\nUser-Agent: PureProxy/1.0\r\n\r\n`
     );
@@ -155,6 +158,7 @@ async function validateProxyIP(ip, port = 443) {
       }
     }(), 2500); 
 
+    // 检查是否包含 Cloudflare 特征头
     const isCloudflare = responseText.toLowerCase().includes('server: cloudflare');
     
     if (isCloudflare) {
@@ -183,9 +187,14 @@ async function handleScheduled(event, env, ctx) {
       const response = await fetch(source.url);
       if (response.ok) {
         const text = await response.text();
+        // 打印前100个字符用于调试，确认是否下载到了内容
+        console.log(`[Source] ${source.name} 内容预览: ${text.substring(0, 50)}...`);
+        
         const ips = extractIPs(text); // 使用暴力解析
         console.log(`   └─ 暴力解析出 ${ips.length} 个 IP`);
         return ips;
+      } else {
+        console.warn(`[Source] ${source.name} 返回状态码: ${response.status}`);
       }
     } catch (e) {
       console.error(`[Source] 错误 ${source.name}:`, e);
@@ -196,28 +205,25 @@ async function handleScheduled(event, env, ctx) {
   const results = await Promise.all(fetchPromises);
   results.forEach(ips => candidates.push(...ips));
 
-  // 2. 只有当公共源彻底挂了，才尝试 FOFA (如果配置了)
-  // 这作为最后的防线
-  if (candidates.length < 50 && env.FOFA_EMAIL && env.FOFA_KEY) {
-     // ... (FOFA 逻辑保留，但优先级降低)
-  }
-
-  // 去重并打乱
+  // 去重
   candidates = [...new Set(candidates)];
+  
   if (candidates.length === 0) {
     console.log("❌ 未获取到任何 IP，请检查网络或源状态");
     return;
   }
   
   // 随机抽取 50 个进行验证 (免费版 Worker 资源有限，不能一次验几千个)
+  // 随机化很重要，否则每次都只验证列表头部的那几个
   const batch = candidates.sort(() => Math.random() - 0.5).slice(0, 50);
   console.log(`本次扫描队列: ${batch.length} 个 IP (从 ${candidates.length} 个中随机抽取)`);
 
   let validCount = 0;
 
   for (const line of batch) {
-    // 免费版限制: 每次任务尽量控制在 30s 内，验证 10 个有效 IP 就够了
-    if (validCount >= 10) break; 
+    // 免费版限制: 每次任务尽量控制在 30s 内，验证 5-8 个有效 IP 就够了
+    // 如果验证太多会导致 Worker 超时被强制杀掉
+    if (validCount >= 8) break; 
 
     const [ip, portStr] = line.split(':');
     const port = parseInt(portStr);
@@ -229,7 +235,7 @@ async function handleScheduled(event, env, ctx) {
     if (latency !== null) {
       console.log(`✅ [Valid] ${ip}:${port} (${latency}ms)`);
       
-      // 验证成功后，查询 Geo 信息
+      // 验证成功后，查询 Geo 信息 (增加延迟防止 ip-api 封禁)
       await delay(1000); 
       const geo = await fetchIpGeo(ip);
       

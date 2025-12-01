@@ -22,15 +22,17 @@ Cloudflare Workers 存在限制，无法直接连接到 Cloudflare 自有的 IP 
 
 ## 🚀 数据源与策略
 
-本项目采用 **FOFA 定向扫描 + 开源聚合兜底** 的混合策略：
+本项目目前采用 **开源聚合 + 暴力解析** 的策略，彻底解决了单一数据源不稳定或格式解析失败的问题：
 
-1.  **FOFA (VIP/免费版)**: 
-    *   通过配置 API Key，直接从 FOFA 网络空间测绘引擎抓取。
-    *   **搜索语法**: `server=="cloudflare" && port="443" && country="US"`
-    *   **策略**: 优先抓取美国 IP。
-2.  **开源聚合 (兜底)**:
-    *   当 FOFA 配额耗尽或未配置时，自动切换至 **ymyuuu/IPDB** 等高质量开源列表。
-    *   智能解析 Base64 订阅内容，提取 IP。
+1.  **核心聚合源**: 
+    *   `391040525/ProxyIP` (更新最快)
+    *   `ymyuuu/IPDB` (质量最高)
+    *   `vfarid/cf-ip-scanner` (专注 Cloudflare)
+2.  **暴力解析技术**:
+    *   后端 Worker 使用全局正则扫描下载的内容，无论源文件是 Base64 编码、JSON 格式还是纯文本，均能强制提取出 IP 列表。
+3.  **智能优选**:
+    *   **家宽优先**: 自动识别 ISP，给予家庭宽带 (Residential) IP 更高权重。
+    *   **地区加权**: 给予美国 (US) IP 额外加分，方便访问特定服务。
 
 ---
 
@@ -78,13 +80,8 @@ Cloudflare Workers 存在限制，无法直接连接到 Cloudflare 自有的 IP 
     *   Database: `pureproxy-db`
 4.  **配置定时任务**:
     *   Settings -> Triggers -> Cron Triggers -> Add Cron Trigger
-    *   Cron expression: `*/30 * * * *` (每30分钟运行一次)
-5.  **(强烈推荐) 配置 FOFA API**:
-    *   Settings -> Bindings -> Environment Variables
-    *   添加 `FOFA_EMAIL`: 你的注册邮箱
-    *   添加 `FOFA_KEY`: 你的 API Key (在 fofa.info 个人中心查看)
-    *   *注: 免费版 FOFA 每日有查询限额，请勿将 Cron 频率设置过高。*
-6.  点击 **Deploy**。
+    *   Cron expression: `*/10 * * * *` (建议每10分钟运行一次)
+5.  点击 **Deploy**。
 
 ### 第三步：部署前端 Pages
 
@@ -97,14 +94,14 @@ Cloudflare Workers 存在限制，无法直接连接到 Cloudflare 自有的 IP 
 
 ## ❓ 常见问题排查
 
-### 1. FOFA 日志报错
-在 Worker -> Logs 中查看：
-*   `[FOFA] API 错误: 820000: F-Coin is not enough` -> 积分不足。解决方法：等待第二天刷新或充值。Worker 会自动切换到公共源。
-*   `[FOFA] API 错误: 40001: Account invalid` -> 邮箱未验证或 Key 错误。
+### 1. 日志显示 "暴力解析出 0 个 IP"
+*   请检查网络连通性。Cloudflare Workers 偶尔会因为网络波动无法连接 GitHub。
+*   通常只需等待下一次定时任务自动重试即可。
 
-### 2. 公共源只解析出 1 个 IP
-*   这通常是因为源返回了 Base64 编码。最新版代码已修复此问题，支持自动 Base64 解码。
-
-### 3. 为什么扫描到的 IP 很少？
+### 2. 为什么扫描到的 IP 很少？
 *   ProxyIP 的验证非常严格（必须能反代 Cloudflare）。市面上 99% 的普通代理都无法通过此验证。
-*   每次扫描任务限制了运行时间（防止超时），每次只新增 5-8 个有效 IP 是正常的。建议让定时任务多跑几天，数据库就会丰富起来。
+*   为了防止 Worker 超时，每次任务只验证一小批随机抽取的 IP。随着时间推移，数据库中的有效 IP 会越来越多。
+
+### 3. 如何验证部署成功？
+*   在 Worker 的 Triggers 页面点击 "Test"。
+*   在 Real-time Logs 中看到 `✅ [Valid] ...` 即表示成功抓取并入库。
