@@ -1,9 +1,8 @@
-
 import React, { useState, useEffect } from 'react';
 import { ProxyIP, AIAnalysisResult, AIModelConfig } from '../types';
 import { analyzeProxyRisk } from '../services/aiService';
 import { AVAILABLE_AI_MODELS } from '../constants';
-import { X, ShieldCheck, Server, Globe, Activity, Bot, Cpu, AlertTriangle, Cloud, CheckCircle, XCircle } from 'lucide-react';
+import { X, ShieldCheck, Server, Globe, Activity, Bot, Cpu, AlertTriangle, Cloud, CheckCircle, XCircle, MapPin } from 'lucide-react';
 
 interface DetailModalProps {
   proxy: ProxyIP | null;
@@ -13,7 +12,6 @@ interface DetailModalProps {
 const DetailModal: React.FC<DetailModalProps> = ({ proxy, onClose }) => {
   const [analysis, setAnalysis] = useState<AIAnalysisResult | null>(null);
   const [loading, setLoading] = useState(false);
-  // Default to Gemini Flash or the first available model
   const [selectedModelId, setSelectedModelId] = useState(AVAILABLE_AI_MODELS[0].id);
 
   const selectedModelConfig = AVAILABLE_AI_MODELS.find(m => m.id === selectedModelId) || AVAILABLE_AI_MODELS[0];
@@ -50,11 +48,19 @@ const DetailModal: React.FC<DetailModalProps> = ({ proxy, onClose }) => {
               <span className="text-gray-500 text-lg">:</span>
               <span className="font-mono text-emerald-400">{proxy.port}</span>
             </h2>
-            <p className="text-gray-400 text-sm mt-1 flex items-center gap-2">
-              <Globe size={14} /> {proxy.country} ({proxy.countryCode})
-              <span className="text-gray-600">•</span>
-              <Server size={14} /> {proxy.isp}
-            </p>
+            <div className="text-gray-400 text-sm mt-2 flex flex-wrap gap-x-4 gap-y-1">
+              <span className="flex items-center gap-1.5">
+                 <Globe size={14} /> {proxy.country} ({proxy.countryCode})
+              </span>
+              {(proxy.region || proxy.city) && (
+                <span className="flex items-center gap-1.5 text-gray-300">
+                  <MapPin size={14} /> {proxy.city}{proxy.region ? `, ${proxy.region}` : ''}
+                </span>
+              )}
+              <span className="flex items-center gap-1.5">
+                 <Server size={14} /> {proxy.isp || '未知 ISP'}
+              </span>
+            </div>
           </div>
           <button 
             onClick={onClose} 

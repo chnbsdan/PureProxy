@@ -26,6 +26,8 @@ export interface ProxyIP {
   protocol: ProxyProtocol;
   country: string;
   countryCode: string; // ISO 3166-1 alpha-2
+  region?: string; // New: State/Province
+  city?: string;   // New: City
   anonymity: AnonymityLevel;
   latency: number; // in ms
   uptime?: number; // percentage (optional now)
