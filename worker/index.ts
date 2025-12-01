@@ -1,32 +1,22 @@
 import { connect } from 'cloudflare:sockets';
 
 // Cloudflare ProxyIP 专用数据源
-// 这些源收集的是能够反向代理 Cloudflare 流量的 IP
+// 包含 ymyuuu/IPDB (高质量聚合) 和 391040525/ProxyIP (专用反代)
 const PROXY_SOURCES = [
-  // 391040525/ProxyIP 是目前最权威的来源之一
   {
-    url: 'https://raw.githubusercontent.com/391040525/ProxyIP/main/itds.txt', 
-    protocol: 'HTTPS' // 通常这些 IP 开放 443/80 端口，作为 HTTPS 反代
+    name: 'ymyuuu/IPDB (Best Proxy)',
+    url: 'https://raw.githubusercontent.com/ymyuuu/IPDB/main/bestproxy.txt',
+    type: 'mixed'
   },
   {
-    url: 'https://raw.githubusercontent.com/391040525/ProxyIP/main/hk.txt',
-    protocol: 'HTTPS'
+    name: '391040525/ProxyIP (Active)',
+    url: 'https://raw.githubusercontent.com/391040525/ProxyIP/main/active.txt', // 聚合的活跃列表
+    type: 'text'
   },
   {
-    url: 'https://raw.githubusercontent.com/391040525/ProxyIP/main/kr.txt',
-    protocol: 'HTTPS'
-  },
-  {
-    url: 'https://raw.githubusercontent.com/391040525/ProxyIP/main/sg.txt',
-    protocol: 'HTTPS'
-  },
-  {
-    url: 'https://raw.githubusercontent.com/391040525/ProxyIP/main/jp.txt',
-    protocol: 'HTTPS'
-  },
-  {
-    url: 'https://raw.githubusercontent.com/391040525/ProxyIP/main/us.txt',
-    protocol: 'HTTPS'
+    name: 'Eternity / Proxy List',
+    url: 'https://raw.githubusercontent.com/eternity-spring/proxy-list/main/http.txt',
+    type: 'text'
   }
 ];
 
@@ -42,9 +32,27 @@ const withTimeout = (promise, ms) => {
 };
 
 /**
+ * 尝试 Base64 解码
+ * 很多代理源内容是 Base64 编码的
+ */
+function tryDecode(content) {
+  try {
+    // 简单的判断：如果包含大量非空白字符且没有换行，可能是 base64
+    if (!content.includes('\n') && content.length > 50) {
+      return atob(content);
+    }
+    // 或者尝试强制解码，如果失败则返回原文
+    return atob(content);
+  } catch (e) {
+    return content;
+  }
+}
+
+/**
  * 判断是否为公网 IP (过滤内网和保留 IP)
  */
 function isValidPublicIp(ip) {
+  if (!ip) return false;
   // 基本 IPv4 正则
   const ipv4Regex = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
   const match = ip.match(ipv4Regex);
@@ -59,38 +67,36 @@ function isValidPublicIp(ip) {
   if (part0 === 127) return false;
   if (part0 === 0) return false;
   if (part0 >= 224) return false; // Multicast & Reserved
-  if (part0 === 215) return false; // DoD (常见误报)
-
+  if (part0 === 215) return false; // DoD
+  
   return true;
 }
 
 /**
  * 判断是否为家宽 ISP (Residential)
- * 这是一个简化的关键词匹配，实际生产环境可以使用 ASN 数据库
  */
 function isResidentialISP(ispName) {
   if (!ispName) return false;
   const lower = ispName.toLowerCase();
   
-  // 典型的家宽/移动网络关键词
   const residentialKeywords = [
     'cable', 'dsl', 'fios', 'broadband', 'telecom', 'mobile', 'wireless', 
     'verizon', 'comcast', 'at&t', 'vodafone', 'orange', 't-mobile', 'sprint',
     'charter', 'spectrum', 'rogers', 'bell', 'shaw', 'telus', 'kddi', 'ntt',
-    'softbank', 'kt corp', 'sk broadband', 'chunghwa', 'hinet', 'vietel'
+    'softbank', 'kt corp', 'sk broadband', 'chunghwa', 'hinet', 'vietel', 
+    'residental', 'dynamic'
   ];
 
-  // 典型的数据中心/云厂商关键词
   const datacenterKeywords = [
     'cloud', 'data', 'center', 'hosting', 'server', 'vps', 'dedicated',
     'amazon', 'aws', 'google', 'microsoft', 'azure', 'alibaba', 'tencent',
-    'digitalocean', 'linode', 'vultr', 'ovh', 'hetzner', 'choopa', 'm247'
+    'digitalocean', 'linode', 'vultr', 'ovh', 'hetzner', 'choopa', 'm247',
+    'oracle', 'fly.io', 'cloudflare'
   ];
 
   if (datacenterKeywords.some(k => lower.includes(k))) return false;
   if (residentialKeywords.some(k => lower.includes(k))) return true;
 
-  // 默认判定：如果不是明确的数据中心，且不包含 cloud 等词，倾向于认为是 ISP
   return false;
 }
 
@@ -111,7 +117,7 @@ async function fetchIpGeo(ip) {
 
 /**
  * 核心验证: 验证是否为有效的 Cloudflare ProxyIP
- * 原理: 连接 IP，发送 Host 为 speed.cloudflare.com 的请求，检查是否返回 Server: cloudflare
+ * 原理: 连接 IP:443，发送 Host 为 speed.cloudflare.com 的请求，检查是否返回 Server: cloudflare
  */
 async function validateProxyIP(ip, port = 443) {
   const start = Date.now();
@@ -128,13 +134,12 @@ async function validateProxyIP(ip, port = 443) {
     }(), 2000);
 
     // 2. 构造 HTTP 请求
-    // 我们请求 Cloudflare 的测速地址，如果这个 IP 是有效的反代，它会将请求转发给 CF
     const request = new TextEncoder().encode(
       `GET / HTTP/1.1\r\nHost: speed.cloudflare.com\r\nConnection: close\r\nUser-Agent: PureProxy/1.0\r\n\r\n`
     );
     await writer.write(request);
 
-    // 3. 读取响应 (等待最多 2秒)
+    // 3. 读取响应 (等待最多 2.5秒)
     reader = socket.readable.getReader();
     let responseText = '';
     const decoder = new TextDecoder();
@@ -145,10 +150,9 @@ async function validateProxyIP(ip, port = 443) {
       if (value) {
         responseText = decoder.decode(value, { stream: false });
       }
-    }(), 2000);
+    }(), 2500);
 
     // 4. 关键验证: 检查响应头
-    // Cloudflare 的服务器一定会返回 Server: cloudflare
     const isCloudflare = responseText.toLowerCase().includes('server: cloudflare');
     
     if (isCloudflare) {
@@ -161,7 +165,7 @@ async function validateProxyIP(ip, port = 443) {
     return null; 
   } finally {
     if (reader) try { reader.releaseLock(); } catch(e) {}
-    if (writer) try { writer.releaseLock(); } catch(e) {} // close() might fail if reader is active
+    if (writer) try { writer.releaseLock(); } catch(e) {}
     if (socket) try { socket.close(); } catch(e) {}
   }
 }
@@ -176,43 +180,76 @@ async function handleScheduled(event, env, ctx) {
   const shuffledSources = PROXY_SOURCES.sort(() => Math.random() - 0.5);
 
   for (const source of shuffledSources) {
-    if (validCount >= 5) break; // 限制单次运行入库数量，避免 Worker 超时
+    if (validCount >= 3) break; // 每次运行只抓取少量精华，避免超时
 
     try {
-      console.log(`正在获取源: ${source.url}`);
+      console.log(`正在获取源: ${source.name} (${source.url})`);
       const response = await fetch(source.url);
-      if (!response.ok) continue;
       
-      const text = await response.text();
-      // 解析 IP，支持 "IP" 或 "IP:Port" 格式
-      // ProxyIP 列表通常默认端口是 443 (HTTPS) 或 80 (HTTP)
-      // 391040525/ProxyIP 的列表中通常只有 IP，端口默认 443
-      const lines = text.split('\n')
+      console.log(`源响应状态: ${response.status}`);
+      if (!response.ok) {
+        console.warn(`源获取失败: ${response.statusText}`);
+        continue;
+      }
+
+      let text = await response.text();
+      const rawLength = text.length;
+      console.log(`获取内容长度: ${rawLength} 字符`);
+
+      if (rawLength < 10) {
+        console.warn("源内容为空或过短，跳过");
+        continue;
+      }
+
+      // 尝试 Base64 解码 (适配 v2ray/clash 订阅链接)
+      if (!text.includes(' ') && !text.includes('\n')) {
+          console.log("检测到 Base64 编码，尝试解码...");
+          text = tryDecode(text);
+      }
+      
+      // 提取潜在的 IP:Port
+      const lines = text.split(/[\r\n]+/)
         .map(l => l.trim())
-        .filter(l => l && isValidPublicIp(l.split(':')[0]))
-        .sort(() => Math.random() - 0.5) // 随机打乱
-        .slice(0, 15); // 每次只验证 15 个，防止超时
+        .filter(l => l && l.length > 7 && !l.startsWith('#'))
+        // 简单清洗：尝试提取 IP:Port 结构
+        .map(l => {
+             // 移除协议前缀 (vmess:// etc)
+             let clean = l.replace(/^[a-z]+:\/\//, ''); 
+             // 提取 IP 部分
+             const match = clean.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})[:\s](\d+)/);
+             if (match) return `${match[1]}:${match[2]}`;
+             
+             // 如果只有 IP 没有端口，尝试找单纯的 IP
+             const ipMatch = clean.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+             if (ipMatch) return `${ipMatch[1]}:443`; // 默认为 443
+             
+             return null;
+        })
+        .filter(l => l !== null)
+        .filter(l => isValidPublicIp(l.split(':')[0]));
 
-      console.log(`抽取了 ${lines.length} 个候选 IP 进行深度验证`);
+      console.log(`解析出 ${lines.length} 个候选 IP`);
+      
+      if (lines.length === 0) continue;
 
-      for (const line of lines) {
-        let ip = line;
-        let port = 443; // 默认端口
+      // 随机抽取 10 个进行深度验证
+      const candidates = lines.sort(() => Math.random() - 0.5).slice(0, 10);
 
-        if (line.includes(':')) {
-          const parts = line.split(':');
-          ip = parts[0];
-          port = parseInt(parts[1]);
-        }
+      for (const line of candidates) {
+        const parts = line.split(':');
+        const ip = parts[0];
+        const port = parseInt(parts[1]);
 
-        // 1. 深度协议验证
+        console.log(`正在验证: ${ip}:${port}...`);
+        
+        // 1. 深度协议验证 (Cloudflare 握手)
         const latency = await validateProxyIP(ip, port);
 
         if (latency !== null) {
-          console.log(`✅ 有效 ProxyIP: ${ip}:${port} (${latency}ms)`);
+          console.log(`✅ 有效 ProxyIP! 延迟: ${latency}ms`);
           
           // 2. 获取 Geo 信息
-          await delay(1500); // 避免 Geo API 速率限制
+          await delay(1200); // 避免 Geo API 速率限制
           const geo = await fetchIpGeo(ip);
           
           const country = geo ? geo.country : '未知';
@@ -220,20 +257,14 @@ async function handleScheduled(event, env, ctx) {
           const city = geo ? geo.city : '';
           const region = geo ? geo.regionName : '';
           const isp = geo ? geo.isp : 'Unknown ISP';
-          
-          // 判断是否家宽
           const isResidential = isResidentialISP(isp);
 
-          // 3. 评分算法
-          let purityScore = Math.max(10, 100 - Math.floor(latency / 15));
-          if (!isResidential) purityScore -= 20; // 数据中心 IP 扣分
-          if (purityScore < 0) purityScore = 0;
+          // 3. 评分
+          let purityScore = Math.max(10, 100 - Math.floor(latency / 20));
+          if (!isResidential) purityScore -= 15;
           
-          // ProxyIP 既然能反代 CF，说明 CF 允许它连接，通过率通常极高
-          const cfProb = 99; 
           const id = crypto.randomUUID();
 
-          // 4. 入库
           try {
             await env.DB.prepare(`
               INSERT INTO proxies (
@@ -249,26 +280,27 @@ async function handleScheduled(event, env, ctx) {
                 purity_score = excluded.purity_score,
                 is_residential = excluded.is_residential
             `).bind(
-              id, ip, port, 'HTTPS', // ProxyIP 通常用于 HTTPS 反代
+              id, ip, port, 'HTTPS',
               country, countryCode, region, city, isp,
-              '透明', // ProxyIP 本质是反向代理，不算严格的高匿代理
-              latency, purityScore, cfProb,
+              '透明', 
+              latency, purityScore, 99,
               Date.now(), Date.now(), isResidential ? 1 : 0
             ).run();
             
             validCount++;
-            console.log(`--> 入库成功 (家宽: ${isResidential}): ${ip}`);
           } catch (dbErr) {
-            console.error("数据库写入失败", dbErr);
+            console.error("写入数据库错误", dbErr);
           }
+        } else {
+            // console.log("无效");
         }
       }
     } catch (e) {
-      console.error(`源处理失败`, e);
+      console.error(`源处理异常: ${source.name}`, e);
     }
   }
   
-  console.log(`任务完成，新增 ${validCount} 个有效 ProxyIP。`);
+  console.log(`任务结束，入库 ${validCount} 个`);
 }
 
 async function handleRequest(request, env) {
