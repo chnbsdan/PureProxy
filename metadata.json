@@ -1,0 +1,5 @@
+{
+  "name": "PureProxy 纯净度扫描",
+  "description": "一个兼容 Cloudflare 部署的综合代理 IP 搜索引擎和纯净度分析器。具有实时过滤、清洁度评分和 Gemini 驱动的风险分析功能。",
+  "requestFramePermissions": []
+}
