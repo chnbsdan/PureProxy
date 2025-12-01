@@ -46,6 +46,7 @@ export interface FilterState {
   maxLatency?: number;
   minPurity?: number;
   cfCompatible?: boolean;
+  isResidential?: boolean; // New: Filter for Residential vs Datacenter
 }
 
 export interface AIAnalysisResult {

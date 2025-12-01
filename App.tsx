@@ -11,7 +11,9 @@ import {
   ArrowUp,
   ArrowDown,
   Home,
-  Building2
+  Building2,
+  MapPin,
+  Network
 } from 'lucide-react';
 import { fetchProxies } from './services/proxyService';
 import { ProxyIP, FilterState, ProxyProtocol, AnonymityLevel } from './types';
@@ -38,7 +40,8 @@ function App() {
   const [filters, setFilters] = useState<FilterState>({
     protocol: undefined,
     country: undefined,
-    minPurity: 0
+    minPurity: 0,
+    isResidential: undefined // undefined = all, true = residential, false = datacenter
   });
 
   const loadData = async () => {
@@ -56,6 +59,20 @@ function App() {
   useEffect(() => {
     loadData();
   }, []);
+
+  // 动态提取现有数据中的所有国家列表
+  const uniqueCountries = useMemo(() => {
+    const countryMap = new Map<string, string>();
+    proxies.forEach(p => {
+      if (p.countryCode && p.country) {
+        if (!countryMap.has(p.countryCode)) {
+          countryMap.set(p.countryCode, p.country);
+        }
+      }
+    });
+    // 按名称排序
+    return Array.from(countryMap.entries()).sort((a, b) => a[1].localeCompare(b[1]));
+  }, [proxies]);
 
   // Handle Sort Request
   const requestSort = (key: SortKey) => {
@@ -85,7 +102,15 @@ function App() {
       const matchesProtocol = filters.protocol ? p.protocol === filters.protocol : true;
       const matchesPurity = filters.minPurity ? p.purityScore >= filters.minPurity : true;
       
-      return matchesSearch && matchesProtocol && matchesPurity;
+      // Country Filter
+      const matchesCountry = filters.country ? p.countryCode === filters.country : true;
+
+      // Type Filter (Residential vs Datacenter)
+      const matchesType = filters.isResidential !== undefined 
+        ? p.isResidential === filters.isResidential 
+        : true;
+      
+      return matchesSearch && matchesProtocol && matchesPurity && matchesCountry && matchesType;
     });
 
     // 2. Sort
@@ -156,8 +181,9 @@ function App() {
           </div>
 
           {/* Controls */}
-          <div className="bg-gray-800/50 border border-gray-700/50 rounded-xl p-4 flex flex-col md:flex-row gap-4 items-center">
-            <div className="relative flex-1 w-full">
+          <div className="bg-gray-800/50 border border-gray-700/50 rounded-xl p-4 flex flex-col xl:flex-row gap-4">
+            {/* Search Input */}
+            <div className="relative flex-1 w-full min-w-[200px]">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 w-5 h-5" />
               <input 
                 type="text" 
@@ -168,20 +194,61 @@ function App() {
               />
             </div>
             
-            <div className="flex items-center gap-2 w-full md:w-auto overflow-x-auto pb-1 md:pb-0">
-              <select 
-                className="bg-gray-900 border border-gray-700 text-gray-300 text-sm rounded-lg focus:ring-emerald-500 focus:border-emerald-500 block p-2.5"
-                onChange={(e) => setFilters(prev => ({ ...prev, minPurity: Number(e.target.value) }))}
-              >
-                <option value="0">不限分数</option>
-                <option value="50">50+ 良好</option>
-                <option value="80">80+ 纯净</option>
-              </select>
+            <div className="flex flex-wrap items-center gap-2 w-full xl:w-auto">
+              
+              {/* Country Dropdown */}
+              <div className="relative w-full sm:w-auto">
+                <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 w-4 h-4" />
+                <select 
+                  className="w-full sm:w-40 bg-gray-900 border border-gray-700 text-gray-300 text-sm rounded-lg focus:ring-emerald-500 focus:border-emerald-500 block pl-9 p-2.5 appearance-none"
+                  value={filters.country || ''}
+                  onChange={(e) => setFilters(prev => ({ ...prev, country: e.target.value || undefined }))}
+                >
+                  <option value="">所有地区</option>
+                  {uniqueCountries.map(([code, name]) => (
+                    <option key={code} value={code}>{name}</option>
+                  ))}
+                </select>
+              </div>
 
+              {/* ISP Type Dropdown */}
+              <div className="relative w-full sm:w-auto">
+                <Network className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 w-4 h-4" />
+                <select 
+                  className="w-full sm:w-48 bg-gray-900 border border-gray-700 text-gray-300 text-sm rounded-lg focus:ring-emerald-500 focus:border-emerald-500 block pl-9 p-2.5 appearance-none"
+                  value={filters.isResidential === undefined ? 'all' : String(filters.isResidential)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    let isRes: boolean | undefined = undefined;
+                    if (val === 'true') isRes = true;
+                    if (val === 'false') isRes = false;
+                    setFilters(prev => ({ ...prev, isResidential: isRes }));
+                  }}
+                >
+                  <option value="all">所有网络类型</option>
+                  <option value="true">🏡 家庭宽带 (Residential)</option>
+                  <option value="false">🏢 数据中心/企业 (DC)</option>
+                </select>
+              </div>
+
+              {/* Purity Score Dropdown */}
+              <div className="relative w-full sm:w-auto">
+                <Filter className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 w-4 h-4" />
+                <select 
+                  className="w-full sm:w-40 bg-gray-900 border border-gray-700 text-gray-300 text-sm rounded-lg focus:ring-emerald-500 focus:border-emerald-500 block pl-9 p-2.5 appearance-none"
+                  onChange={(e) => setFilters(prev => ({ ...prev, minPurity: Number(e.target.value) }))}
+                >
+                  <option value="0">不限分数</option>
+                  <option value="50">50+ 良好</option>
+                  <option value="80">80+ 纯净</option>
+                </select>
+              </div>
+
+              {/* Refresh Button */}
               <button 
                 onClick={loadData}
                 disabled={loading}
-                className="p-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors disabled:opacity-50"
+                className="w-full sm:w-auto p-2.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors disabled:opacity-50 flex items-center justify-center"
               >
                 <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
               </button>
