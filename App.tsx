@@ -16,7 +16,8 @@ import {
   MapPin,
   Network,
   Zap,
-  Server
+  Server,
+  AlertTriangle
 } from 'lucide-react';
 import { fetchProxies } from './services/proxyService';
 import { ProxyIP, FilterState, ProxyProtocol, AnonymityLevel, ProxyType } from './types';
@@ -35,6 +36,7 @@ function App() {
   const [proxies, setProxies] = useState<ProxyIP[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedProxy, setSelectedProxy] = useState<ProxyIP | null>(null);
+  const [isEnvMissing, setIsEnvMissing] = useState(false);
   
   // Sorting State
   const [sortConfig, setSortConfig] = useState<SortConfig>({ key: 'purityScore', direction: 'desc' });
@@ -46,6 +48,12 @@ function App() {
   });
 
   const loadData = async () => {
+    // Check ENV first
+    if (!process.env.REACT_APP_API_URL) {
+      setIsEnvMissing(true);
+      return;
+    }
+    
     setLoading(true);
     try {
       // Load data based on active tab
@@ -180,6 +188,21 @@ function App() {
           </p>
         </div>
 
+        {isEnvMissing && (
+          <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 mb-6 flex items-start gap-4">
+             <AlertTriangle className="text-amber-500 shrink-0" size={24} />
+             <div>
+               <h3 className="text-amber-400 font-bold mb-1">未配置 API 地址</h3>
+               <p className="text-gray-300 text-sm">
+                 前端无法连接到 Worker 后端。请在 Cloudflare Pages 的 <strong>Settings (设置) -&gt; Environment variables (环境变量)</strong> 中添加：
+               </p>
+               <code className="block mt-2 bg-black/30 p-2 rounded text-xs font-mono text-emerald-400">
+                 REACT_APP_API_URL = https://pureproxy-backend.YOUR_NAME.workers.dev
+               </code>
+             </div>
+          </div>
+        )}
+
         {/* Filters & Controls */}
         <div className="bg-gray-800/30 border border-gray-700/30 rounded-xl p-4 flex flex-col xl:flex-row gap-4 mb-6">
           {/* Search Input */}
@@ -267,6 +290,7 @@ function App() {
                     <td colSpan={6} className="px-6 py-12 text-center text-gray-500">
                       <Filter className="w-12 h-12 mx-auto mb-3 opacity-20" />
                       {loading ? '正在从数据库加载...' : '数据库暂无数据，请等待后台 Cron 任务执行'}
+                      {!loading && isEnvMissing && <div className="text-amber-500 mt-2">提示：检测到 API 地址未配置，前端无法获取数据。</div>}
                     </td>
                   </tr>
                 ) : (
