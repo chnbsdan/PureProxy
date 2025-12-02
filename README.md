@@ -26,7 +26,7 @@
 
 ## 🛠️ 数据库升级 (必读)
 
-V22 引入了 `type` 字段来区分两种模式。请务必在 Cloudflare D1 Console 执行以下 SQL 进行更新（这会重置旧数据）：
+V22 引入了 `type` 字段来区分两种模式。请务必在 Cloudflare D1 Console 执行以下 SQL 进行更新（这会重置旧数据）。**请一次性复制以下代码执行**：
 
 ```sql
 DROP TABLE IF EXISTS proxies;
@@ -35,7 +35,7 @@ CREATE TABLE proxies (
   ip TEXT NOT NULL,
   port INTEGER NOT NULL,
   protocol TEXT,
-  type TEXT DEFAULT 'proxy', -- 新增: 'proxy' or 'best'
+  type TEXT DEFAULT 'proxy',
   country TEXT,
   country_code TEXT,
   region TEXT,
@@ -44,7 +44,7 @@ CREATE TABLE proxies (
   is_residential INTEGER DEFAULT 0,
   anonymity TEXT,
   latency INTEGER,
-  speed_info TEXT, -- 新增: 测速备注
+  speed_info TEXT,
   purity_score INTEGER,
   cf_pass_prob INTEGER,
   last_checked INTEGER,

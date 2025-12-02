@@ -237,7 +237,6 @@ export default {
            cloudflarePassProbability: row.cf_pass_prob,
            speedInfo: row.speed_info,
            lastChecked: row.last_checked,
-           // Removed duplicate countryCode assignment
         }));
 
         return new Response(JSON.stringify(formatted), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
